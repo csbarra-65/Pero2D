@@ -1,0 +1,163 @@
+//
+
+#include "RunAction.hh"
+
+#include "DetectorConstruction.hh"
+#include "PrimaryGeneratorAction.hh"
+
+#include "G4AccumulableManager.hh"
+#include "G4LogicalVolume.hh"
+#include "G4ParticleDefinition.hh"
+#include "G4ParticleGun.hh"
+#include "G4Run.hh"
+#include "G4RunManager.hh"
+#include "G4SystemOfUnits.hh"
+#include "G4UnitsTable.hh"
+#include "G4Run.hh"
+#include "G4AnalysisManager.hh" 
+#include "G4RootAnalysisManager.hh" 
+
+namespace Pero2D
+{
+
+//....oooOO0OOooo........oooOO0OOooo........oooOO0OOooo........oooOO0OOooo......
+
+RunAction::RunAction()
+{
+  // add new units for dose
+  
+  const G4double milligray = 1.e-3 * gray;
+  const G4double microgray = 1.e-6 * gray;
+  const G4double nanogray = 1.e-9 * gray;
+  const G4double picogray = 1.e-12 * gray;
+
+  new G4UnitDefinition("milligray", "milliGy", "Dose", milligray);
+  new G4UnitDefinition("microgray", "microGy", "Dose", microgray);
+  new G4UnitDefinition("nanogray", "nanoGy", "Dose", nanogray);
+  new G4UnitDefinition("picogray", "picoGy", "Dose", picogray);
+
+  // Register accumulable to the accumulable manager
+  G4AccumulableManager* accumulableManager = G4AccumulableManager::Instance();
+  accumulableManager->Register(fEdep);
+  accumulableManager->Register(fEdep2);
+
+  auto rootManager = G4RootAnalysisManager::Instance();
+  rootManager->SetVerboseLevel(1);
+  
+  // Energy in  keV
+  rootManager->CreateNtuple("GunInfo", "GunInfo");
+  rootManager->CreateNtupleDColumn("fGunEnergy");
+  rootManager->CreateNtupleDColumn("fGunX");
+  rootManager->CreateNtupleDColumn("fGunY");
+  rootManager->CreateNtupleDColumn("fGunZ");
+  rootManager->FinishNtuple(0);
+
+  rootManager->CreateNtuple("EventInfo", "EventInfo");
+  rootManager->CreateNtupleDColumn("fToTDepEnergy");
+  rootManager->CreateNtupleDColumn("fNIDepEnergy");
+  rootManager->CreateNtupleIColumn("iNumberOfTracks");
+  rootManager->CreateNtupleIColumn("iNumFreeChargePairs");
+  rootManager->FinishNtuple(1);
+}
+
+//....oooOO0OOooo........oooOO0OOooo........oooOO0OOooo........oooOO0OOooo......
+
+void RunAction::BeginOfRunAction(const G4Run* run)
+{
+  // inform the runManager to save random number seed
+  G4RunManager::GetRunManager()->SetRandomNumberStore(false);
+
+  // reset accumulables to their initial values
+  G4AccumulableManager* accumulableManager = G4AccumulableManager::Instance();
+  accumulableManager->Reset();
+
+  // files to store histograms
+  G4RootAnalysisManager *rootManager = G4RootAnalysisManager::Instance();
+
+  G4int runID = run->GetRunID();  
+  std::stringstream strRunID;
+  strRunID << runID;
+
+  // create different output files for different runs
+  //man->OpenFile("output" + strRunID.str() + ".root");
+  rootManager->OpenFile("output" + strRunID.str() + ".root");
+
+}
+
+//....oooOO0OOooo........oooOO0OOooo........oooOO0OOooo........oooOO0OOooo......
+
+void RunAction::EndOfRunAction(const G4Run* run)
+{
+  G4int nofEvents = run->GetNumberOfEvent();
+  if (nofEvents == 0) return;
+
+  // Merge accumulables
+  G4AccumulableManager* accumulableManager = G4AccumulableManager::Instance();
+  accumulableManager->Merge();
+
+  // Compute total energy deposit in a run and its variance
+  //
+  G4double edep = fEdep.GetValue();
+  G4double edep2 = fEdep2.GetValue();
+  G4double rms = edep2 - edep * edep / nofEvents;
+
+  if (rms > 0.)
+    rms = std::sqrt(rms);
+  else
+    rms = 0.;
+
+  const auto detConstruction = static_cast<const DetectorConstruction*>(
+    G4RunManager::GetRunManager()->GetUserDetectorConstruction());
+  G4double mass = detConstruction->GetScoringPero2DVolume()->GetMass();
+  G4double dose = edep / mass;
+  G4double rmsDose = rms / mass;
+
+  // Run conditions
+  //  note: There is no primary generator action object for "master"
+  //        run manager for multi-threaded mode.
+  const auto generatorAction = static_cast<const PrimaryGeneratorAction*>(
+    G4RunManager::GetRunManager()->GetUserPrimaryGeneratorAction());
+  G4String runCondition;
+  
+  if (generatorAction) {
+    const G4ParticleGun* particleGun = generatorAction->GetParticleGun();
+    runCondition += particleGun->GetParticleDefinition()->GetParticleName();
+    runCondition += " of ";
+    G4double particleEnergy = particleGun->GetParticleEnergy();
+    runCondition += G4BestUnit(particleEnergy, "Energy");
+  }
+
+  // save ntuple to output root file
+  auto rootManager = G4RootAnalysisManager::Instance();
+  rootManager->Write();
+  rootManager->CloseFile();
+
+  // Print
+  //
+  if (IsMaster()) {
+    G4cout << G4endl << "--------------------End of Global Run-----------------------";
+  }
+  else {
+    G4cout << G4endl << "--------------------End of Local Run------------------------";
+  }
+
+  G4cout << G4endl << " The run is " << nofEvents << " " << runCondition << G4endl << G4endl;
+  G4cout << "  --> cumulated edep per run in scoring volume = " << G4BestUnit(edep, "Energy") 
+         << " = " << edep/joule << " joule" << G4endl;  
+  G4cout << "  --> mass of scoring volume = " << G4BestUnit(mass, "Mass") << G4endl << G4endl; 
+  G4cout << " Absorbed dose per run in scoring volume = edep/mass = " << G4BestUnit(dose, "Dose")
+         << "; rms = " << G4BestUnit(rmsDose, "Dose") << G4endl
+         << "------------------------------------------------------------" << G4endl << G4endl;
+}
+
+//....oooOO0OOooo........oooOO0OOooo........oooOO0OOooo........oooOO0OOooo......
+
+void RunAction::AddEdep(G4double edep)
+{
+  fEdep += edep;
+  fEdep2 += edep * edep;
+}
+
+//....oooOO0OOooo........oooOO0OOooo........oooOO0OOooo........oooOO0OOooo......
+
+}  // namespace Pero2D
