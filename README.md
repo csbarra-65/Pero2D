@@ -24,4 +24,6 @@ electrodes size is 1 mm;
 Scintillator is included ;
 scintThickness = 1.0 * mm;
 
-
+If run without passing any macro, defaults are used and visualization is started.
+ExampleMacro.mac shows how to change default behaviour.
+Simulation results are saved in root ntuples.
